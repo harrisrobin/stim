@@ -14,6 +14,7 @@ const mockRotate = jest.fn();
 const mockZoom = jest.fn();
 const mockTouch = jest.fn();
 let mockArtwork = false;
+let mockDuoFrames = false;
 let mockControlling = true;
 let mockAllowed = true;
 let mockPhysical = false;
@@ -53,14 +54,18 @@ jest.mock('@/hooks/machines', () => ({
     title: 'Duo fixture',
     env: {
       path: '/fixture',
-      ios: { udid: 'fixture', owned: true, state: 'Booted', formFactor: 'dual', model: 'iPhone Duo' },
+      ios: { udid: 'fixture', owned: true, state: 'Booted', name: 'stim-fixture (iPhone Duo 27.1)' },
       activity: { ios: mockDriver },
       deviceLeases: mockPhysical ? [] : undefined,
     },
   }),
   useMacConnection: () => ({
     mac: { id: 'm1', name: 'Fixture Mac' },
-    state: { kind: 'open', deviceId: 'phone', features: ['frames', 'device-frames'] },
+    state: {
+      kind: 'open',
+      deviceId: 'phone',
+      features: ['frames', 'device-frames', ...(mockDuoFrames ? ['duo-frames'] : [])],
+    },
     connection: null,
   }),
 }));
@@ -140,6 +145,7 @@ beforeEach(() => {
   mockAllowed = true;
   mockPhysical = false;
   mockArtwork = false;
+  mockDuoFrames = false;
   jest.clearAllMocks();
 });
 
@@ -196,6 +202,21 @@ it('keeps physical iPhones view-only without rotation buttons', async () => {
   );
   expect(screen.queryByLabelText('Rotate left')).toBeNull();
   expect(screen.queryByLabelText('Rotate right')).toBeNull();
+});
+
+it('lets a Duo viewer enable its device frame with Control off', async () => {
+  mockControlling = false;
+  mockDuoFrames = true;
+  const screen = await render(
+    <I18nProvider i18n={i18n}>
+      <DeviceView workspace="/fixture" platform="ios" slot="default" />
+    </I18nProvider>,
+  );
+  const toggle = screen.getByLabelText('Device frame');
+  expect(toggle.props.accessibilityState.selected).toBe(false);
+  await fireEvent.press(toggle);
+  expect(screen.getByLabelText('Device frame').props.accessibilityState.selected).toBe(true);
+  expect(mockBegin).not.toHaveBeenCalled();
 });
 
 it('starts frameless and maps framed touches using the aperture layout rather than the housing fit', async () => {

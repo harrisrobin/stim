@@ -519,7 +519,7 @@ export function DeviceView({
       </>
     ) : null;
   const toolbars =
-    buttons || artwork ? (
+    buttons || artwork || (duoSupported && !replaying) ? (
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
