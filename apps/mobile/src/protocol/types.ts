@@ -537,6 +537,7 @@ export interface LogFilter {
 export interface FrameTarget {
   /** Requests installed ordinary-device artwork for this live subscription. */
   deviceFrame?: boolean;
+  duoFrame?: boolean;
   workspace: string;
   platform: DevicePlatform;
   slot?: string;
@@ -831,7 +832,7 @@ export interface Methods {
   'control.end': { params: { session: string }; result: Record<string, never> };
   /** `x` and `y` are fractions of the upright screen, origin top-left. */
   'input.touch': {
-    params: { session: string; phase: TouchPhase; x: number; y: number; display?: number };
+    params: { session: string; phase: TouchPhase; x: number; y: number; display?: number; duoRevision?: string };
     result: Record<string, never>;
   };
   /** Printable ASCII; `\n` presses Return, `\t` Tab and `\b` Delete. */
@@ -908,6 +909,7 @@ export interface FrameEvent {
   posture?: 'folded' | 'unfolded';
   /** Clockwise artwork rotation captured with this frame. */
   artworkTurns?: number;
+  duo?: { revision: string; screenID: number; angle: number; orientation: number };
 }
 
 /**

@@ -27,6 +27,9 @@ export default defineConfig({
         'helper/VideoEncoder.swift',
         'helper/PhoneSource.swift',
         'helper/FrameArtwork.swift',
+        'helper/DuoFrameRenderer.swift',
+        'helper/DuoHingeMonitor.swift',
+        'helper/DuoCaptureSource.swift',
         ...desktop.map((path) => `../../apps/desktop/Sources/${path}`),
       ]) {
         copyFileSync(source, `dist/stim-frames/${basename(source)}`);

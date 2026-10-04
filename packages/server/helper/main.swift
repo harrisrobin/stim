@@ -1,8 +1,8 @@
 import CoreImage
 import CoreVideo
 import Foundation
-import ImageIO
 import IOSurface
+import ImageIO
 
 // stim-frames streams one device's screen as JPEG frames for stim-server.
 //
@@ -52,6 +52,7 @@ struct Config: Equatable {
   var jpegFps: Double?
   var video = false
   var deviceFrame = false
+  var duoFrame: DuoCapture?
   var bitrate = 3_000_000
   var record: Recording?
 }
@@ -62,10 +63,16 @@ struct Recording: Equatable {
   var bitrate: Int
 }
 
+struct DuoCapture: Equatable {
+  var maxEdge: Int
+  var fps: Double
+}
+
 enum Output {
   private static let writer = DispatchQueue(label: "stim.frames.output")
   private static let lock = NSLock()
   private static var writing = false
+  private static var writingDuo = false
   private static var pendingVideo = 0
   private static var videoNeedsKeyframe = false
   private static var keyframeRequested = false
@@ -77,13 +84,37 @@ enum Output {
     defer { lock.unlock() }
     guard !writing else { return }
     writing = true
-    var body = Data([artworkTurns == nil ? 1 : 5, UInt8(width >> 8), UInt8(width & 0xff), UInt8(height >> 8), UInt8(height & 0xff)])
+    var body = Data([
+      artworkTurns == nil ? 1 : 5, UInt8(width >> 8), UInt8(width & 0xff), UInt8(height >> 8), UInt8(height & 0xff),
+    ])
     if let artworkTurns { body.append(UInt8(artworkTurns)) }
     body += jpeg
     writer.async {
       write(body)
       lock.lock()
       writing = false
+      lock.unlock()
+    }
+  }
+
+  static func duoFrame(_ frame: DuoFrameRenderer.Frame) {
+    guard
+      let metadata = try? JSONSerialization.data(withJSONObject: [
+        "width": frame.width, "height": frame.height, "revision": frame.revision,
+        "screenID": frame.screenID, "angle": frame.angle, "orientation": frame.orientation,
+      ]), metadata.count <= 65535
+    else { return }
+    lock.lock()
+    defer { lock.unlock() }
+    guard !writingDuo else { return }
+    writingDuo = true
+    var body = Data([6, UInt8(metadata.count >> 8), UInt8(metadata.count & 0xff)])
+    body += metadata
+    body += frame.jpeg
+    writer.async {
+      write(body)
+      lock.lock()
+      writingDuo = false
       lock.unlock()
     }
   }
@@ -263,6 +294,10 @@ final class SimulatorSource {
   private let recorder = recordEncoder()
   private let recordGate = RecordGate()
   private let jpegGate = JpegGate()
+  private let duoGate = JpegGate()
+  private var duo: DuoCaptureSource?
+  private var duoRendering = false
+  private let stopLock = NSLock()
   private var frameTurns: Int?
   private lazy var artwork = FrameArtworkPublisher { SimulatorFrameArtwork.load(udid: self.udid) }
 
@@ -274,6 +309,14 @@ final class SimulatorSource {
   }
 
   var queue: DispatchQueue { pacer.queue }
+
+  func stop() {
+    stopLock.lock()
+    defer { stopLock.unlock() }
+    let touch = DispatchQueue.main.sync { MainActor.assumeIsolated { duo?.configure(nil) } }
+    guard let touch else { return }
+    inputQueue.sync { hid?.touch(.up, at: touch.point, screenID: touch.screenID) }
+  }
 
   func start(deadline: Date = Date().addingTimeInterval(30)) {
     let found = CoreSimulator.displays(udid: udid)
@@ -310,6 +353,12 @@ final class SimulatorSource {
       }
       self.displays = []
       self.reportedDisplay = nil
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          self.releaseDuo(self.duo?.configure(nil))
+          self.duo = nil
+        }
+      }
       self.inputQueue.async { self.hid = nil }
       self.start()
     }
@@ -338,6 +387,14 @@ final class SimulatorSource {
     recorder.configure(record: config)
     queue.async {
       self.pacer.config = config
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          if self.duo == nil, config.duoFrame != nil {
+            self.duo = DuoCaptureSource(udid: self.udid, changed: self.pacer.changed)
+          }
+          self.releaseDuo(self.duo?.configure(config.duoFrame))
+        }
+      }
       self.pacer.changed()
     }
   }
@@ -366,6 +423,32 @@ final class SimulatorSource {
     }
     let ioSurface = unsafeBitCast(surface, to: IOSurfaceRef.self)
     let artworkTurns = (4 - quarterTurns) % 4
+    if let requested = config.duoFrame, !duoRendering,
+      let properties = display.screenProperties
+    {
+      var paced = config
+      paced.jpegFps = requested.fps
+      if duoGate.admit(paced, pacer: pacer) {
+        duoRendering = true
+        let surfaces = displays.compactMap { display -> (screenID: UInt32, surface: IOSurface?)? in
+          guard let properties = display.screenProperties, properties.screenType == 0 else { return nil }
+          return (properties.screenID, display.framebufferSurface)
+        }
+        let viewport = CIImage(ioSurface: ioSurface).oriented(orientation).extent.size
+        DispatchQueue.main.async {
+          MainActor.assumeIsolated {
+            if self.duo == nil {
+              self.duo = DuoCaptureSource(udid: self.udid, changed: self.pacer.changed)
+              self.releaseDuo(self.duo?.configure(config.duoFrame))
+            }
+            self.duo?.render(
+              surfaces: surfaces, activeID: properties.screenID,
+              orientation: properties.uiOrientation, viewport: viewport, config: config)
+            self.queue.async { self.duoRendering = false }
+          }
+        }
+      }
+    }
     if config.deviceFrame, frameTurns != artworkTurns {
       frameTurns = artworkTurns
       artwork.send(quarterTurns: artworkTurns)
@@ -482,7 +565,9 @@ final class EmulatorSource {
       frameTurns = artworkTurns
       artwork.send(quarterTurns: artworkTurns)
     }
-    if config.video { video.encode(rgba: frame.rgba, width: frame.width, height: frame.height, capturedAt: capturedAt, artworkTurns: artworkTurns) }
+    if config.video {
+      video.encode(rgba: frame.rgba, width: frame.width, height: frame.height, capturedAt: capturedAt, artworkTurns: artworkTurns)
+    }
     if recordGate.admit(config, pacer: pacer) {
       recorder.encode(rgba: frame.rgba, width: frame.width, height: frame.height, capturedAt: capturedAt)
     }
@@ -585,7 +670,7 @@ extension AndroidDeviceSource: Source {
       stream.send(Scrcpy.keycode(.up, key))
     case .rotate, .posture:
       Output.notice(["inputError": "A physical device rotates and folds only in hand."])
-    case .config, .keyframe, .recordKeyframe:
+    case .config, .keyframe, .recordKeyframe, .duoTouch, .duoRelease:
       break
     }
   }
@@ -752,7 +837,7 @@ extension WebSource: Source {
       page.back()
     case .rotate, .posture:
       Output.notice(["inputError": "A web page does not rotate or fold."])
-    case .config, .keyframe, .recordKeyframe:
+    case .config, .keyframe, .recordKeyframe, .duoTouch, .duoRelease:
       break
     }
   }
@@ -763,6 +848,8 @@ enum Command {
   case keyframe
   case recordKeyframe
   case touch(TouchPhase, CGPoint, display: Int)
+  case duoTouch(TouchPhase, CGPoint, revision: String)
+  case duoRelease
   case text(String)
   case button(String)
   case rotate(clockwise: Bool)
@@ -774,11 +861,16 @@ func parseCommand(_ line: String, base: Config) -> Command? {
   if object["keyframe"] as? Bool == true { return .keyframe }
   if object["recordKeyframe"] as? Bool == true { return .recordKeyframe }
   switch object["input"] as? String {
+  case "duo-release":
+    return .duoRelease
   case "touch":
     let phases: [String: TouchPhase] = ["down": .down, "move": .move, "up": .up]
     guard let phase = (object["phase"] as? String).flatMap({ phases[$0] }),
       let x = object["x"] as? Double, let y = object["y"] as? Double, (0...1).contains(x), (0...1).contains(y)
     else { return nil }
+    if let revision = object["duoRevision"] as? String, UUID(uuidString: revision) != nil {
+      return .duoTouch(phase, CGPoint(x: x, y: y), revision: revision)
+    }
     return .touch(phase, CGPoint(x: x, y: y), display: object["display"] as? Int ?? 0)
   case "text":
     return (object["text"] as? String).map { .text($0) }
@@ -799,6 +891,12 @@ func parseCommand(_ line: String, base: Config) -> Command? {
     if let jpegFps = object["jpegFps"] as? Double, jpegFps > 0 { config.jpegFps = min(jpegFps, 60) }
     if let video = object["video"] as? Bool { config.video = video }
     config.deviceFrame = object["deviceFrame"] as? Bool ?? false
+    config.duoFrame = (object["duoFrame"] as? [String: Any]).flatMap { duo in
+      guard let edge = duo["maxEdge"] as? Int, edge > 0,
+        let fps = duo["fps"] as? Double, fps > 0
+      else { return nil }
+      return DuoCapture(maxEdge: min(edge, 4096), fps: min(fps, 60))
+    }
     if let bitrate = object["bitrate"] as? Int, bitrate > 0 { config.bitrate = bitrate }
     config.record = (object["record"] as? [String: Any]).flatMap { record in
       guard let edge = record["maxEdge"] as? Int, edge > 0, let bitrate = record["bitrate"] as? Int, bitrate > 0,
@@ -878,7 +976,28 @@ let keyCodes: [Character: (code: UInt16, shift: Bool)] = {
 
 extension SimulatorSource: Source {
   func input(_ command: Command) {
+    if case .duoTouch(let phase, let point, let revision) = command {
+      DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+          guard let touch = self.duo?.touch(phase, point: point, revision: revision) else { return }
+          self.inputQueue.async {
+            if self.hid?.isConnected != true { self.hid = SimulatorHID(udid: self.udid) }
+            self.hid?.touch(phase, at: touch.point, screenID: touch.screenID)
+          }
+        }
+      }
+      return
+    }
+    if case .duoRelease = command {
+      DispatchQueue.main.async { MainActor.assumeIsolated { self.releaseDuo(self.duo?.release()) } }
+      return
+    }
     inputQueue.async { self.apply(command) }
+  }
+
+  private func releaseDuo(_ touch: DuoFrameRenderer.Touch?) {
+    guard let touch else { return }
+    inputQueue.async { self.hid?.touch(.up, at: touch.point, screenID: touch.screenID) }
   }
 
   private func apply(_ command: Command) {
@@ -913,7 +1032,7 @@ extension SimulatorSource: Source {
       hid.button(button, down: true)
       usleep(100_000)
       hid.button(button, down: false)
-    case .config, .keyframe, .recordKeyframe, .rotate, .posture:
+    case .config, .keyframe, .recordKeyframe, .rotate, .posture, .duoTouch, .duoRelease:
       break
     }
   }
@@ -959,7 +1078,7 @@ extension EmulatorSource: Source {
       wait("rotation") { await EmulatorRotation.rotate(serial: self.serial, clockwise: clockwise) }
     case .posture(let posture):
       wait("posture") { await posture.apply(serial: self.serial) }
-    case .config, .keyframe, .recordKeyframe:
+    case .config, .keyframe, .recordKeyframe, .duoTouch, .duoRelease:
       break
     }
   }
@@ -1013,9 +1132,15 @@ let arguments = CommandLine.arguments
 let usage =
   "usage: stim-frames ios <udid> | android <serial> | android-device <serial> <adb> <scrcpy-server> | web <cdpEndpoint> <chromePid> <targetId> | iphone <udid> [name]"
 let terminated = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global())
-let counts = ["simulator-options": [4, 5], "web": [5], "iphone": [3, 4], "android-device": [5], "android": [3, 4]]
+let counts = [
+  "simulator-options": [4, 5], "hinge-monitor": [3], "web": [5], "iphone": [3, 4], "android-device": [5], "android": [3, 4],
+]
 guard arguments.count > 1, (counts[arguments[1]] ?? [3]).contains(arguments.count) else { fail(usage) }
 switch arguments[1] {
+case "hinge-monitor":
+  guard let directory = ProcessInfo.processInfo.environment["DEVELOPER_DIR"] else { exit(1) }
+  CoreSimulator.developerDir = directory
+  DuoHingeMonitor.run(udid: arguments[2])
 case "simulator-options":
   DispatchQueue.global().async {
     _ = FileHandle.standardInput.readDataToEndOfFile()
@@ -1051,6 +1176,13 @@ case "ios":
   CoreSimulator.developerDir = CoreSimulator.selectedDeveloperDir()
   guard CoreSimulator.deviceSet != nil else { fail("CoreSimulator could not be loaded from \(CoreSimulator.developerDir).") }
   let source = SimulatorSource(udid: arguments[2])
+  beforeExit = source.stop
+  signal(SIGTERM, SIG_IGN)
+  terminated.setEventHandler {
+    source.stop()
+    exit(0)
+  }
+  terminated.resume()
   Output.requestKeyframe = source.keyframe
   readCommands(source)
   source.queue.async { source.start() }

@@ -917,7 +917,7 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
     ): void {
       const framePool = hosted?.view.frames ?? frames;
       const target = isJsonObject(params) ? params : {};
-      const { workspace, platform, slot, physical, fps, maxEdge, video, at, rate, deviceFrame } = target;
+      const { workspace, platform, slot, physical, fps, maxEdge, video, at, rate, deviceFrame, duoFrame } = target;
       if (typeof workspace !== 'string' || !PLATFORMS.includes(platform as Platform)) {
         return error(
           id,
@@ -934,12 +934,19 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
       if (deviceFrame !== undefined && typeof deviceFrame !== 'boolean') {
         return error(id, 'bad-request', 'deviceFrame must be true or false.');
       }
+      if (
+        duoFrame !== undefined &&
+        (typeof duoFrame !== 'boolean' || (duoFrame && (platform !== 'ios' || physical || hosted)))
+      ) {
+        return error(id, 'bad-request', 'duoFrame needs a local owned iOS simulator.');
+      }
+      const wantsDuo = duoFrame === true && at === undefined;
       const wantsArtwork = deviceFrame === true && !physical && platform !== 'web';
       if (video !== undefined && (!Array.isArray(video) || !video.every((codec) => typeof codec === 'string'))) {
         return error(id, 'bad-request', 'video must be a list of codec names.');
       }
       const wantsVideo = (video as string[] | undefined)?.includes('h264') === true;
-      const offersVideo = wantsVideo && frameHelper() !== null;
+      const offersVideo = wantsVideo && !wantsDuo && frameHelper() !== null;
       const maxFps = wantsVideo ? FRAME_FPS.video : FRAME_FPS.max;
       if (fps !== undefined && (!Number.isInteger(fps) || (fps as number) < 1 || (fps as number) > maxFps)) {
         return error(id, 'bad-request', `fps must be a whole number from 1 to ${maxFps}.`);
@@ -1048,6 +1055,14 @@ export async function startServer(options: ServerOptions): Promise<RunningServer
           if (!ended) send(socket, { event: 'frame-delayed', subscription, delayed, ...(reason ? { reason } : {}) });
         },
         failed: end,
+        ...(wantsDuo
+          ? {
+              duo: (frame: Frame) => {
+                pending = frame;
+                if (!retry) flush();
+              },
+            }
+          : {}),
         ...(wantsArtwork
           ? {
               artwork: (artwork: DeviceFrameArtwork | null) => {

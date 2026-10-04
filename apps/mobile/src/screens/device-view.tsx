@@ -68,7 +68,14 @@ import { LIVE_VIEW, replayView } from '@/lib/replay-view';
 import { aspectOf, liftAbove } from '@/lib/zoom';
 import { workspaceTitleAt } from '@/lib/workspace-names';
 import { devicesOf, shortUrl, streamsFrames, unservedReason } from '@/lib/workspaces';
-import type { DevicePlatform, DevicePosture, InputButton, ReplayRate, RotateDirection } from '@/protocol/types';
+import type {
+  DevicePlatform,
+  DevicePosture,
+  FrameEvent,
+  InputButton,
+  ReplayRate,
+  RotateDirection,
+} from '@/protocol/types';
 
 const LIVE_FPS = 60;
 const MAX_EDGE = 1600;
@@ -158,17 +165,21 @@ export function DeviceView({
   const [showsFrame, setShowsFrame] = useState(false);
   const frameSupported =
     !physical && platform !== 'web' && link.kind === 'open' && link.features?.includes('device-frames') === true;
-  const streamOptions = useMemo(
-    () => ({
-      enabled: streams,
-      fps: preset.fps,
-      maxEdge,
-      video: preset.video,
-      startAt: replayStart,
-      deviceFrame: frameSupported,
-    }),
-    [streams, preset.fps, maxEdge, preset.video, replayStart, frameSupported],
-  );
+  const duoSupported =
+    !physical &&
+    platform === 'ios' &&
+    /\bDuo\b/.test(device?.model ?? '') &&
+    link.kind === 'open' &&
+    link.features?.includes('duo-frames') === true;
+  const streamOptions = {
+    enabled: streams,
+    fps: preset.fps,
+    maxEdge,
+    video: preset.video,
+    startAt: replayStart,
+    deviceFrame: frameSupported,
+    duoFrame: duoSupported && showsFrame,
+  };
   const stream = useDeviceStream({ workspace, platform, slot, physical }, streamOptions);
   const canReplay = hasFootage && stream.replayable !== false;
   const replaying = stream.replay !== null;
@@ -181,10 +192,12 @@ export function DeviceView({
     timelineStart: timeline?.start ?? null,
   });
   if (synced !== view) setView(synced);
-  const source = stream.video ?? stream.frame;
+  const control = useDeviceControl(workspace, platform, slot, physical);
+  const [heldFrame, setHeldFrame] = useState<FrameEvent | null>(null);
+  if (heldFrame && control.state.kind !== 'on') setHeldFrame(null);
+  const source = heldFrame ?? stream.video ?? stream.frame;
   const artwork = replaying ? null : matchingDeviceFrame(stream.artwork, source);
   const activeArtwork = showsFrame ? artwork : null;
-  const control = useDeviceControl(workspace, platform, slot, physical);
   const readOnly = !viewOnly && control.allowed === false;
   const [copied, setCopied] = useState(false);
   const deviceId = link.kind === 'open' ? link.deviceId : null;
@@ -294,16 +307,31 @@ export function DeviceView({
     setRotating(orientation);
   };
 
-  const touches = useRef({ active: false, lastMove: 0, pending: null as { x: number; y: number } | null });
+  const touches = useRef({
+    active: false,
+    lastMove: 0,
+    pending: null as { x: number; y: number } | null,
+    revision: undefined as string | undefined,
+  });
+  useEffect(() => {
+    if (!controlling) {
+      touches.current.active = false;
+    }
+  }, [controlling]);
   const point = (x: number, y: number, clamp: boolean) =>
     source && touchSize.current ? framePoint(x, y, touchSize.current, source, clamp) : null;
   const touchHandlers = {
     onStartShouldSetResponder: () => true,
     onMoveShouldSetResponder: () => true,
     onResponderGrant: (event: GestureResponderEvent) => {
+      const revision = stream.frame?.duo?.revision;
+      if (revision && stream.displayedDuoRevision !== revision) return;
       const at = point(event.nativeEvent.locationX, event.nativeEvent.locationY, false);
-      touches.current = { active: at !== null, lastMove: Date.now(), pending: at };
-      if (at) control.touch('down', at.x, at.y);
+      touches.current = { active: at !== null, lastMove: Date.now(), pending: at, revision };
+      if (at) {
+        if (revision) setHeldFrame(stream.frame);
+        control.touch('down', at.x, at.y, revision);
+      }
     },
     onResponderMove: (event: GestureResponderEvent) => {
       if (!touches.current.active) return;
@@ -313,19 +341,21 @@ export function DeviceView({
       const now = Date.now();
       if (now - touches.current.lastMove < MOVE_INTERVAL_MS) return;
       touches.current.lastMove = now;
-      control.touch('move', at.x, at.y);
+      control.touch('move', at.x, at.y, touches.current.revision);
     },
     onResponderRelease: (event: GestureResponderEvent) => {
       if (!touches.current.active) return;
       const at = point(event.nativeEvent.locationX, event.nativeEvent.locationY, true) ?? touches.current.pending;
       touches.current.active = false;
-      if (at) control.touch('up', at.x, at.y);
+      if (at) control.touch('up', at.x, at.y, touches.current.revision);
+      setHeldFrame(null);
     },
     onResponderTerminate: () => {
       const at = touches.current.pending;
       if (!touches.current.active || !at) return;
       touches.current.active = false;
-      control.touch('up', at.x, at.y);
+      control.touch('up', at.x, at.y, touches.current.revision);
+      setHeldFrame(null);
     },
   };
 
@@ -497,7 +527,7 @@ export function DeviceView({
         contentContainerStyle={styles.toolRow}
       >
         <View style={styles.toolbar}>
-          {artwork ? (
+          {artwork || (duoSupported && !replaying) ? (
             <ToolButton
               icon="rectangle.portrait"
               label={t`Device frame`}
@@ -628,7 +658,7 @@ export function DeviceView({
                 <Animated.View style={[styles.flying, zoom.screenStyle, lift]}>
                   <DeviceFrame artwork={snapshot ? null : activeArtwork}>
                     <DeviceScreen
-                      stream={stream}
+                      stream={heldFrame ? { ...stream, frame: heldFrame, video: null } : stream}
                       label={model}
                       style={StyleSheet.absoluteFill}
                       requested={{ fps: preset.fps, maxEdge }}

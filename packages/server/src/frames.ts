@@ -5,7 +5,7 @@ import { connect, type ClientHttp2Session } from 'node:http2';
 import { join } from 'node:path';
 import type { DeviceLeaseState, StatusPayload } from '@stim-cli/core/state';
 import type { ClaimHandle } from '@stim-cli/core/ownership-claim';
-import type { DevicePosture, FrameTarget, DeviceFrameArtwork } from './protocol.ts';
+import type { DevicePosture, FrameTarget, DeviceFrameArtwork, DuoFramePose } from './protocol.ts';
 import { serverDir } from './registry.ts';
 import { DEFAULT_FRAME_HINT, HelperSource, RECORD_HINT, type FrameHint } from './frame-helper.ts';
 import { Pending, terminate } from './stim-command.ts';
@@ -33,6 +33,7 @@ export interface Frame {
   data: string;
   posture?: Posture;
   artworkTurns?: number;
+  duo?: DuoFramePose;
 }
 
 export interface DeviceInput {
@@ -45,6 +46,7 @@ export interface DeviceInput {
 export interface FrameListener {
   frame: (frame: Frame) => void;
   artwork?: (artwork: DeviceFrameArtwork | null) => void;
+  duo?: (frame: Frame) => void;
   /**
    * With `video`, a device the helper streams sends H.264 access units here instead of JPEG frames; a device on
    * screenshots still sends `frame`.
@@ -844,6 +846,14 @@ export class FramePool {
             }
           : {}),
         ...(listener.artwork ? { artwork: listener.artwork } : {}),
+        ...(listener.duo
+          ? {
+              duo: (frame: Frame) => {
+                streamed = true;
+                listener.duo!(frame);
+              },
+            }
+          : {}),
         delayed: listener.delayed,
         failed: (message) => {
           if (streamed || cancelled || physical || this.claim) return listener.failed(message);
@@ -918,7 +928,10 @@ export class FramePool {
     return {
       send: (command) => source.send(command),
       keys: () => source.keyboard === true,
-      detach,
+      detach: () => {
+        if (device.platform === 'ios' && device.foldable) source.send({ input: 'duo-release' });
+        detach();
+      },
     };
   }
 
