@@ -152,6 +152,7 @@ export interface BootResult {
   udid?: string;
   serial?: string;
   failed?: boolean;
+  code?: string;
   reason?: string;
   remedy?: string;
 }
