@@ -262,6 +262,21 @@ Run `stim guide settings` for the complete key and value list.
 }
 ```
 
+`concurrency.maxDevices` caps how many Stim-owned simulators and emulators are
+booted at once, counting ones that are still booting. It is unset by default.
+At the cap, `stim ios` and `stim android` refuse with `STIM_AT_CAPACITY`, or,
+with `--wait <seconds>`, wait up to that long for a device to free up. Runs in
+parallel worktrees take their places under one lock in `$STIM_HOME`, so they
+cannot pass the cap together.
+
+Try it with an agent:
+
+```text
+Run `stim ios --wait 600` in this worktree. If other worktrees already use
+every device slot under concurrency.maxDevices, wait for one instead of
+retrying, and tell me how long the run waited.
+```
+
 `iosSimulatorApp` chooses the macOS app that displays an owned iOS simulator after
 Stim boots it. It defaults to `"stim-desktop"` while Stim Desktop is installed
 and to `"xcode"` otherwise. `"xcode"` opens the selected Xcode's Device Hub on

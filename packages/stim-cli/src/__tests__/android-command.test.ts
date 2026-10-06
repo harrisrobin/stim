@@ -5671,13 +5671,34 @@ describe('--device: the lease on the device', () => {
     expect(listLeaseFiles()).toEqual([]);
   });
 
-  test('--wait without --device, an unusable value, and both flags at once are all STIM_BAD_ARG', async () => {
-    const noDevice = await harness({ wait: '30' }).run();
-    expect(noDevice.error?.code).toBe('STIM_BAD_ARG');
-    expect(noDevice.error?.message).toMatch(/only apply to a `--device` run/);
+  test('at a full device cap, --wait waits for a slot and runs, and no --wait refuses at once', async () => {
+    const atCap = {
+      code: 'STIM_AT_CAPACITY',
+      message: '4 Stim device(s) are already booted and concurrency.maxDevices is 4.',
+      remedy: 'stop an environment (stim stop)',
+    };
+    let checks = 0;
+    const waited = harness({
+      wait: '30',
+      sleep: async () => {},
+      checkCapacity: () => (checks++ === 0 ? atCap : null),
+    });
+    expect((await waited.run()).ok).toBe(true);
+    expect(checks).toBe(2);
+    expect(waited.stderr.join('\n')).toMatch(/waiting for a device slot/);
 
+    const refused = await harness({ sleep: async () => {}, checkCapacity: () => atCap }).run();
+    expect(refused.error?.code).toBe('STIM_AT_CAPACITY');
+  });
+
+  test('--no-wait without --device, --wait for a remote device, an unusable value, and both flags at once are all STIM_BAD_ARG', async () => {
     const bypassNoDevice = await harness({ wait: false }).run();
-    expect(bypassNoDevice.error?.message).toMatch(/only apply to a `--device` run/);
+    expect(bypassNoDevice.error?.code).toBe('STIM_BAD_ARG');
+    expect(bypassNoDevice.error?.message).toMatch(/--no-wait only applies to a `--device` run/);
+
+    const remote = await harness({ wait: '30', remoteDevice: 'proxy' }).run();
+    expect(remote.error?.code).toBe('STIM_BAD_ARG');
+    expect(remote.error?.message).toMatch(/not for a remote device/);
 
     const bad = await harness({
       device: true,

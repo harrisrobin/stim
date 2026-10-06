@@ -91,6 +91,15 @@ export function selectIosTarget({
   }
   const selection = resolveIosRemote({ opts, settings, physical, recorded });
   if ('failure' in selection) return selection;
+  if (typeof opts.wait === 'string' && (selection.machine || selection.backend)) {
+    return {
+      failure: {
+        code: 'STIM_BAD_ARG',
+        message: '--wait waits for a `--device` lease or a device slot on this machine, not for a remote device.',
+        remedy: 'Drop --wait, or run on this machine without --remote or the ios.remote setting.',
+      },
+    };
+  }
   const localIos = selection.machine ? deviceSlotPlatforms(d.getProject(root), slot)?.ios : undefined;
   if (selection.machine && localIos?.owned && localIos.deviceUdid) {
     let localRunning = true;

@@ -684,7 +684,7 @@ export function checkConcurrency({
     'note',
     'Concurrency limits are set',
     `${caps}. Right now ${devices} and ${activeBuilds} build slot(s) are in use on this machine. ` +
-      'At the device cap a new `stim ios`/`android` is refused with STIM_AT_CAPACITY (stop an environment or raise it); ' +
+      'At the device cap a new `stim ios`/`android` is refused with STIM_AT_CAPACITY (stop an environment, wait with --wait <seconds>, or raise it); ' +
       'at the build cap a compile waits for a free slot.',
     null,
   );

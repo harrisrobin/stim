@@ -56,6 +56,9 @@ const ADMISSION_LOCK = 'device-admission';
 const ADMISSION_LOCK_WAIT_MS = 5 * 60_000;
 const LOCK_QUIET_MS = 5000;
 const LOCK_PROGRESS_MS = 30_000;
+const SLOT_POLL_MS = 5000;
+const SLOT_POLL_MAX_MS = 30_000;
+const SLOT_PROGRESS_MS = 30_000;
 const LISTING_TIMEOUT_MS = 30_000;
 const NO_ADB: AdbDevices = { emulators: [], physical: [], unhealthy: [] };
 
@@ -156,7 +159,8 @@ function atCapacityRefusal(count: number, max: number): CapacityRefusal {
   return {
     code: 'STIM_AT_CAPACITY',
     message: `${count} Stim device(s) are already booted and concurrency.maxDevices is ${max}, so booting another would exceed the cap.`,
-    remedy: 'stop an environment (stim stop) or raise concurrency.maxDevices',
+    remedy:
+      'stop an environment (stim stop), rerun with --wait <seconds> to wait for a device to free up, or raise concurrency.maxDevices',
   };
 }
 
@@ -277,6 +281,74 @@ export function checkDeviceCapacity({
   return deviceCapacityRefusal({ platform, project, slot, max, ...inventory });
 }
 
+export interface DeviceSlotWait {
+  /** Epoch milliseconds until which a run at the cap waits for a device slot; at or before now, it refuses at once. */
+  deadline?: number;
+  out?: (line: string) => void;
+  now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function waitedRefusal(error: DeviceAdmissionRefusal, elapsedMs: number): DeviceAdmissionRefusal {
+  const atCapacity = error.code === 'STIM_AT_CAPACITY';
+  return new DeviceAdmissionRefusal({
+    code: error.code,
+    message: `${error.message} Waited ${formatElapsed(elapsedMs)}${atCapacity ? ' for a device to free up' : ''}.`,
+    remedy: atCapacity
+      ? 'stop an environment (stim stop), rerun with a longer --wait, or raise concurrency.maxDevices'
+      : error.remedy,
+  });
+}
+
+async function retryAtCapacity<T>(
+  attempt: () => Promise<T>,
+  { deadline = 0, out = () => {}, now = Date.now, sleep = defaultSleep }: DeviceSlotWait,
+): Promise<T> {
+  const started = now();
+  let lastProgress: number | null = null;
+  let pollMs = SLOT_POLL_MS;
+  let waited = false;
+  for (;;) {
+    try {
+      return await attempt();
+    } catch (error) {
+      if (!(error instanceof DeviceAdmissionRefusal)) throw error;
+      if (now() >= deadline) throw waited ? waitedRefusal(error, now() - started) : error;
+      if (lastProgress === null || now() - lastProgress >= SLOT_PROGRESS_MS) {
+        lastProgress = now();
+        out(
+          phaseLine(
+            'device',
+            `waiting for a device slot (${formatElapsed(now() - started)} elapsed, up to ${formatElapsed(deadline - started)}): ${error.message}`,
+          ),
+        );
+      }
+      await sleep(Math.min(pollMs, Math.max(0, deadline - now())));
+      waited = true;
+      pollMs = Math.min(pollMs * 2, SLOT_POLL_MAX_MS);
+    }
+  }
+}
+
+/** Runs the early check until it passes or `wait.deadline` passes, and returns the last refusal. */
+export async function waitForDeviceCapacity(
+  check: () => CapacityRefusal | null,
+  wait: DeviceSlotWait = {},
+): Promise<CapacityRefusal | null> {
+  try {
+    await retryAtCapacity(async () => {
+      const refusal = check();
+      if (refusal) throw new DeviceAdmissionRefusal(refusal);
+    }, wait);
+    return null;
+  } catch (error) {
+    if (!(error instanceof DeviceAdmissionRefusal)) throw error;
+    return { code: error.code, message: error.message, remedy: error.remedy };
+  }
+}
+
 function admissionRefusal(device: BootingDevice, max: number, sources: InventorySources): CapacityRefusal | null {
   const inventory = readInventory(sources);
   if ('code' in inventory) return inventory;
@@ -339,9 +411,10 @@ async function admit(
 }
 
 /**
- * Boots `device` only if one more owned device fits under `concurrency.maxDevices`. The count and the
- * marker that makes this boot visible to other runs are taken under one lock in `$STIM_HOME`, so concurrent
- * runs cannot all pass the cap; the marker is held until `boot` settles. Throws DeviceAdmissionRefusal.
+ * Boots `device` only if one more owned device fits under `concurrency.maxDevices`, waiting until
+ * `deadline` for one to free up. The count and the marker that makes this boot visible to other runs
+ * are taken under one lock in `$STIM_HOME`, so concurrent runs cannot all pass the cap; the marker is
+ * held until `boot` settles. Throws DeviceAdmissionRefusal.
  */
 export async function withDeviceBootAdmission<T>(
   device: BootingDevice,
@@ -351,10 +424,18 @@ export async function withDeviceBootAdmission<T>(
     sources = {},
     lockWaitMs = ADMISSION_LOCK_WAIT_MS,
     out = () => {},
-  }: { max?: number; sources?: InventorySources; lockWaitMs?: number; out?: (line: string) => void } = {},
+    deadline,
+    now,
+    sleep,
+  }: { max?: number; sources?: InventorySources; lockWaitMs?: number } & DeviceSlotWait = {},
 ): Promise<T> {
   if (!max || max <= 0) return boot();
-  const marker = await admit(device, max, sources, lockWaitMs, out);
+  const marker = await retryAtCapacity(() => admit(device, max, sources, lockWaitMs, out), {
+    deadline,
+    out,
+    now,
+    sleep,
+  });
   try {
     return await boot();
   } finally {

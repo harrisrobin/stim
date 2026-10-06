@@ -130,7 +130,8 @@ placement when recovering STIM_OFFLOAD_REFUSED: report its reason and remedy.
 Read stim guide lifecycle concurrency when a build waits on another workspace
 or a build call times out. A native build can outlive a shell timeout; if the
 tool call timed out, retry the same command and follow its printed remedy if
-waiting times out.
+waiting times out. When ios or android refuses with STIM_AT_CAPACITY, rerun
+the same command with --wait <seconds> instead of looping on it.
 
   # Reproduce the affected behavior and capture the baseline errors.
   stim logs --errors

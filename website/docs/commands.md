@@ -298,8 +298,11 @@ build can compile on a paired build machine instead: see `offload.mode` in
   of the owned simulator. With no UDID it takes the first connected device it
   can lease. It cannot be combined with `--remote`. Stim never creates, boots,
   or deletes hardware.
-- `--wait <seconds>` bounds the wait for a physical-device lease (default 60;
-  `0` refuses immediately if busy). Only with `--device`.
+- `--wait <seconds>` with `--device` bounds the wait for a physical-device
+  lease (default 60; `0` refuses immediately if busy). Without `--device`, it
+  waits up to that long for a device slot on this machine under
+  `concurrency.maxDevices` instead of refusing with `STIM_AT_CAPACITY` at once.
+  It does not apply to a remote device.
 - `--no-wait` bypasses leasing, including when another workspace holds the
   device. Installing the same app terminates that workspace's running app.
   Only with `--device`; cannot be combined with `--wait`.
@@ -433,8 +436,11 @@ on a paired build machine instead: see `offload.mode` in
 - `--device [serial]` installs and launches on a connected physical device.
   With no serial it selects a connected device this workspace can lease. It
   cannot be combined with `--remote`.
-- `--wait <seconds>` bounds the physical-device lease wait (default 60;
-  `0` refuses immediately if busy). Only with `--device`.
+- `--wait <seconds>` with `--device` bounds the physical-device lease wait
+  (default 60; `0` refuses immediately if busy). Without `--device`, it waits
+  up to that long for a device slot on this machine under
+  `concurrency.maxDevices` instead of refusing with `STIM_AT_CAPACITY` at once.
+  It does not apply to a remote device.
 - `--no-wait` bypasses leasing, including another workspace's lease. Installing
   the same app terminates that workspace's running app. Only with `--device`;
   cannot be combined with `--wait`.

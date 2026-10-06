@@ -49,7 +49,7 @@ function startIosBoot(
   configure: () => Promise<unknown>,
   label: string,
   out: Notify,
-  simulatorApp?: IosSimulatorApp,
+  { simulatorApp, deviceSlotDeadline }: DeviceFlags,
 ): IosBoot {
   const done = withDeviceBootAdmission(
     { platform: 'ios', key: udid },
@@ -57,7 +57,7 @@ function startIosBoot(
       await bootIosSim(udid, { label, out, simulatorApp });
       await configure();
     },
-    { out },
+    { out, deadline: deviceSlotDeadline },
   );
   // Node ends the process on an unhandled rejection, and `ensureBooted` -- the
   // real handler -- does not run when an earlier step of the run refuses first.
@@ -152,7 +152,7 @@ export async function ensureOwnedIosDevice({
         };
         if (sim.state !== 'Booted') {
           out(chalk.dim(phaseLine('device', `booting ${name} (${sim.udid})`)));
-          return { ...updated, booting: startIosBoot(sim.udid, configure, name, out, flags.simulatorApp), ...facts };
+          return { ...updated, booting: startIosBoot(sim.udid, configure, name, out, flags), ...facts };
         }
         return { ...(await configure()), ...facts };
       }
@@ -210,7 +210,7 @@ export async function ensureOwnedIosDevice({
       },
       adopted.deviceName,
       out,
-      flags.simulatorApp,
+      flags,
     );
     return { ...adopted, booting, deviceType: choice.deviceType, runtime: choice.runtime };
   }
@@ -235,7 +235,7 @@ export async function ensureOwnedIosDevice({
       }),
     created.name,
     out,
-    flags.simulatorApp,
+    flags,
   );
   return {
     ...newRecord,
@@ -423,12 +423,14 @@ export async function ensureIosBooted({
   timeoutMs,
   pollMs,
   out,
+  deviceSlotDeadline,
 }: {
   device?: OwnedDeviceRecord | null;
   simulatorApp?: IosSimulatorApp;
   timeoutMs: number;
   pollMs: number;
   out: Notify;
+  deviceSlotDeadline?: number;
 }): Promise<BootResult> {
   const udid = device?.deviceUdid;
   if (!udid) return { failed: true, reason: 'No iOS simulator is recorded for this project.' };
@@ -485,7 +487,7 @@ export async function ensureIosBooted({
     await withDeviceBootAdmission(
       { platform: 'ios', key: udid },
       () => bootIosSim(udid, { timeoutMs, label: sim.name, out, simulatorApp }),
-      { out },
+      { out, deadline: deviceSlotDeadline },
     );
   } catch (e) {
     return bootFailure(udid, e);

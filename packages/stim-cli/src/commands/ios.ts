@@ -48,6 +48,7 @@ import type { IosCommandOptions, IosBootLike, FailArgs } from './ios/types.ts';
 import { type IosDeps, DEFAULT_DEPS } from './ios/dependencies.ts';
 import { DEFAULT_METRO_PORT } from '../engine/app-install.ts';
 import { didSetUpDevice, ensureOwnedDevice } from '../engine/device.ts';
+import { waitForDeviceCapacity } from '../engine/device-capacity.ts';
 import { parkedMaxSetting, POOL_SETTING_REMEDY } from '../devices/sim-pool.ts';
 import { REMOTE_SESSION_ERROR, binOnPath } from '../engine/device-remote.ts';
 import {
@@ -192,7 +193,7 @@ export function registerIos(program: Command, deps: Partial<IosDeps> = {}): void
     )
     .option(
       '--wait <seconds>',
-      'How long to wait for another workspace to release the phone it leases, before refusing with STIM_DEVICE_BUSY (default 60, 0 refuses at once). Only with --device.',
+      'With --device, how long to wait for another workspace to release the phone it leases before refusing with STIM_DEVICE_BUSY (default 60, 0 refuses at once). Otherwise, how long to wait for a device slot under concurrency.maxDevices before refusing with STIM_AT_CAPACITY (default 0).',
     )
     .option(
       '--no-wait',
@@ -526,7 +527,7 @@ async function runIos(
 
   const wait = resolveIosWait(opts, physical);
   if ('failure' in wait) return fail(wait.failure);
-  const { waitSeconds, noWait } = wait;
+  const { waitSeconds, noWait, deviceSlotWaitSeconds } = wait;
 
   const isExpo = d.detectIsExpo(root);
   const schemeRefusal = explicitSchemeRefusal(root, buildScheme, isExpo, d);
@@ -631,12 +632,12 @@ async function runIos(
       physicalDevice = { udid: resolved.udid, name: resolved.name ?? resolved.udid };
       wireless = resolved.wireless === true;
     }
+    const deviceSlotDeadline = d.now() + deviceSlotWaitSeconds * 1000;
     if (!physical && !hostedTarget) {
-      const capacity = d.checkDeviceCapacity({
-        platform: PLATFORM,
-        project: proj,
-        max: limits.maxDevices,
-      });
+      const capacity = await waitForDeviceCapacity(
+        () => d.checkDeviceCapacity({ platform: PLATFORM, project: proj, max: limits.maxDevices }),
+        { deadline: deviceSlotDeadline, now: d.now, sleep: d.sleep, out: (line) => note(chalk.dim(line)) },
+      );
       if (capacity) return fail(capacity);
     }
 
@@ -662,7 +663,13 @@ async function runIos(
           projectPath: root,
           settingsRoot: root,
           settings,
-          flags: { deviceType, runtime, runtimeFlag: resolveRuntime(opts.runtime, null), simulatorApp },
+          flags: {
+            deviceType,
+            runtime,
+            runtimeFlag: resolveRuntime(opts.runtime, null),
+            simulatorApp,
+            deviceSlotDeadline,
+          },
           note,
           out: note,
         });
@@ -799,7 +806,9 @@ async function runIos(
       const boot = (): Promise<IosBootLike> =>
         physicalDevice
           ? Promise.resolve({ ok: true, udid: physicalDevice.udid })
-          : Promise.resolve(d.ensureBooted({ platform: PLATFORM, device, simulatorApp, out: note })).catch((e) => ({
+          : Promise.resolve(
+              d.ensureBooted({ platform: PLATFORM, device, simulatorApp, out: note, deviceSlotDeadline }),
+            ).catch((e) => ({
               ok: false,
               reason: String((e as Error)?.message || e),
             }));

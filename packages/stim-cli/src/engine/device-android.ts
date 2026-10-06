@@ -191,6 +191,7 @@ export async function ensureOwnedAndroidDevice({
             out,
             logFile,
             alive,
+            deviceSlotDeadline: flags.deviceSlotDeadline,
           })),
           systemImage: ownedAvdSystemImage(record.avdName),
           deviceProfile: currentProfile,
@@ -289,6 +290,7 @@ export async function ensureOwnedAndroidDevice({
           out,
           logFile,
           alive,
+          deviceSlotDeadline: flags.deviceSlotDeadline,
         })),
         adopted: true,
         systemImage,
@@ -325,6 +327,7 @@ export async function ensureOwnedAndroidDevice({
       out,
       logFile,
       alive,
+      deviceSlotDeadline: flags.deviceSlotDeadline,
     })),
     created: created.created,
     systemImage: created.systemImage,
@@ -399,9 +402,11 @@ async function bootOwnedAvdOnFreshPort({
   out,
   logFile = null,
   alive = pidExists,
+  deviceSlotDeadline,
 }: {
   avdName: string;
   metadata?: OwnedDeviceRecord;
+  deviceSlotDeadline?: number;
   projectPath: string;
   slot?: string;
   deviceName?: string;
@@ -439,7 +444,7 @@ async function bootOwnedAvdOnFreshPort({
         throw error;
       }
     },
-    { out },
+    { out, deadline: deviceSlotDeadline },
   );
 }
 
@@ -531,12 +536,14 @@ export async function ensureAndroidBooted({
   out,
   logFile = null,
   alive = pidExists,
+  deviceSlotDeadline,
 }: {
   device?: OwnedDeviceRecord | null;
   projectPath?: string;
   slot?: string;
   timeoutMs: number;
   out: Notify;
+  deviceSlotDeadline?: number;
 } & EmulatorLogging): Promise<BootResult> {
   if (!device?.avdName || !projectPath) {
     return { failed: true, reason: 'No owned Android emulator is recorded for this project.' };
@@ -598,7 +605,10 @@ export async function ensureAndroidBooted({
     return booted(result);
   };
   try {
-    return await withDeviceBootAdmission({ platform: 'android', key: avdName }, boot, { out });
+    return await withDeviceBootAdmission({ platform: 'android', key: avdName }, boot, {
+      out,
+      deadline: deviceSlotDeadline,
+    });
   } catch (error) {
     const refusal = error instanceof DeviceAdmissionRefusal ? error : claimFailure(error, 'stim android');
     if (!refusal) throw error;

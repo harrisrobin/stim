@@ -104,6 +104,7 @@ test('a plan binds build selectors and cache policy to the selected emulator', (
     kind: 'emulator',
     systemImage: 'installed-image',
     deviceProfile: '7.6in Foldable',
+    deviceSlotWaitSeconds: 0,
   });
 });
 

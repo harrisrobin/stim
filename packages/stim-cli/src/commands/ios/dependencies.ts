@@ -165,6 +165,7 @@ export interface IosDeps {
   recordStats: typeof recordRunStats;
   readEstimates: typeof readRunEstimates;
   now: () => number;
+  sleep: (ms: number) => Promise<void>;
 }
 
 export const DEFAULT_DEPS: IosDeps = {
@@ -261,4 +262,5 @@ export const DEFAULT_DEPS: IosDeps = {
   recordStats: recordRunStats,
   readEstimates: readRunEstimates,
   now: () => Date.now(),
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };

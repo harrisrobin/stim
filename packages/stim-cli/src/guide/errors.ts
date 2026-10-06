@@ -738,7 +738,7 @@ so a Debug run on one is wired to a LAN origin instead of localhost.`,
   \`lease: null\` in \`--json\`.`,
     },
     STIM_AT_CAPACITY: {
-      summary: 'concurrency.maxDevices reached; a refusal, not a queue',
+      summary: 'concurrency.maxDevices reached; refused at once unless --wait <seconds>',
       body: () => `STIM_AT_CAPACITY
   Only when concurrency.maxDevices is set (it is UNSET by default, so this never
   fires unless you opted in). Booting a NEW owned device would exceed the cap:
@@ -746,14 +746,15 @@ so a Debug run on one is wired to a LAN origin instead of localhost.`,
   including ones other runs started a moment ago. It can come before Metro
   starts or, when another run took the last place first, when the boot
   starts. An iOS boot starts beside the build, so then the build has already
-  run and a rerun reuses it. It is a refusal, not a queue -- \`ios\`/\`android\`
-  are interactive-shaped, so Stim does not make you wait at a prompt. The
-  remedy is fixed: stop an environment (\`stim stop\`) to free a device, or
-  raise concurrency.maxDevices. A workspace whose OWN device is already booted
-  or booting is never refused -- re-running \`ios\` on an environment you
-  already have is idempotent. (The build cap
-  behaves differently: a compile WAITS for a free slot rather than refusing.
-  See \`guide lifecycle concurrency\`.)`,
+  run and a rerun reuses it. Without \`--wait\` it is a refusal, not a queue,
+  so Stim does not make you wait at a prompt. Rerun with \`--wait <seconds>\`
+  to wait for a device to free up and boot then; agents in parallel worktrees
+  use it instead of a retry loop. Otherwise stop an environment
+  (\`stim stop\`) to free a device, or raise concurrency.maxDevices. A
+  workspace whose OWN device is already booted or booting is never refused --
+  re-running \`ios\` on an environment you already have is idempotent. (The
+  build cap behaves differently: a compile WAITS for a free slot rather than
+  refusing. See \`guide lifecycle concurrency\`.)`,
     },
     STIM_LOW_DISK: {
       summary: 'free disk stayed below budget.hardFloorDiskGb after reclaiming',

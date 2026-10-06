@@ -13,6 +13,7 @@ import {
   unknownAndroidSystemImageRefusal,
   unknownIosDeviceTypeRefusal,
   unknownIosRuntimeRefusal,
+  waitForDeviceCapacity,
   withDeviceBootAdmission,
   DeviceAdmissionRefusal,
 } from '../engine/device-capacity.ts';
@@ -2707,6 +2708,83 @@ describe('withDeviceBootAdmission', () => {
     await expect(
       withDeviceBootAdmission({ platform: 'ios', key: 'u2' }, async () => 'booted', { max: 2, sources: full }),
     ).rejects.toMatchObject({ code: 'STIM_AT_CAPACITY' });
+  });
+});
+
+describe('waiting for a device slot', () => {
+  const atCap = {
+    code: 'STIM_AT_CAPACITY',
+    message:
+      '4 Stim device(s) are already booted and concurrency.maxDevices is 4, so booting another would exceed the cap.',
+    remedy: 'stop an environment (stim stop)',
+  };
+  const clock = () => {
+    let at = 0;
+    return { now: () => at, sleep: async (ms: number) => void (at += ms) };
+  };
+
+  test('without a deadline, a run at the cap is refused at once and does not claim it waited', async () => {
+    let checks = 0;
+    const c = clock();
+    const refusal = await waitForDeviceCapacity(
+      () => {
+        checks++;
+        void c.sleep(2_000);
+        return atCap;
+      },
+      { now: c.now, sleep: c.sleep },
+    );
+    expect(refusal).toEqual(atCap);
+    expect(checks).toBe(1);
+  });
+
+  test('a run at the cap waits until a device frees up, then proceeds', async () => {
+    const lines: string[] = [];
+    let checks = 0;
+    const refusal = await waitForDeviceCapacity(() => (++checks < 3 ? atCap : null), {
+      ...clock(),
+      deadline: 60_000,
+      out: (line) => lines.push(line),
+    });
+    expect(refusal).toBe(null);
+    expect(checks).toBe(3);
+    expect(lines).toHaveLength(1);
+  });
+
+  test('waiting gives up at the deadline with the refusal and how long it waited', async () => {
+    const refusal = await waitForDeviceCapacity(() => atCap, { ...clock(), deadline: 20_000 });
+    expect(refusal?.code).toBe('STIM_AT_CAPACITY');
+    expect(refusal?.message).toMatch(/Waited 20s/);
+  });
+
+  test('a boot that loses the race for the last slot waits for the winner, then boots', async () => {
+    const sources = { sims: [], adb: makeAdbDevices(), config: makeConfig() };
+    let finishFirst!: () => void;
+    let admitted!: () => void;
+    const inFlight = new Promise<void>((resolve) => (admitted = resolve));
+    const first = withDeviceBootAdmission(
+      { platform: 'ios', key: 'u1' },
+      () =>
+        new Promise<string>((resolve) => {
+          admitted();
+          finishFirst = () => resolve('first');
+        }),
+      { max: 1, sources },
+    );
+    await inFlight;
+    const { now } = clock();
+    const second = withDeviceBootAdmission({ platform: 'ios', key: 'u2' }, async () => 'second', {
+      max: 1,
+      sources,
+      deadline: 60_000,
+      now,
+      sleep: async () => {
+        finishFirst();
+        await first;
+      },
+    });
+    await expect(second).resolves.toBe('second');
+    await expect(first).resolves.toBe('first');
   });
 });
 

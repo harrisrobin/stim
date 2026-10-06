@@ -55,6 +55,8 @@ export interface DeviceSettings {
 
 export interface DeviceFlags {
   simulatorApp?: IosSimulatorApp;
+  /** Epoch milliseconds until which a boot at `concurrency.maxDevices` waits for a device slot. */
+  deviceSlotDeadline?: number;
   deviceType?: string | null;
   runtime?: string | null;
   runtimeFlag?: string | null;
@@ -168,6 +170,7 @@ export async function ensureBooted({
   alive = pidExists,
   projectPath,
   slot,
+  deviceSlotDeadline,
 }: Partial<
   {
     platform: string;
@@ -178,10 +181,18 @@ export async function ensureBooted({
     out: Notify;
     projectPath: string;
     slot: string;
+    deviceSlotDeadline: number;
   } & EmulatorLogging
 > = {}): Promise<BootResult> {
   if (platform === 'ios')
-    return ensureIosBooted({ device, simulatorApp, timeoutMs: timeoutMs ?? IOS_BOOT_TIMEOUT_MS, pollMs, out });
+    return ensureIosBooted({
+      device,
+      simulatorApp,
+      timeoutMs: timeoutMs ?? IOS_BOOT_TIMEOUT_MS,
+      pollMs,
+      out,
+      deviceSlotDeadline,
+    });
   if (platform === 'android')
     return ensureAndroidBooted({
       device,
@@ -191,6 +202,7 @@ export async function ensureBooted({
       out,
       logFile,
       alive,
+      deviceSlotDeadline,
     });
   return { failed: true, reason: `Unknown platform "${platform}".` };
 }

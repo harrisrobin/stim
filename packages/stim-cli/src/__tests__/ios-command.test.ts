@@ -6376,14 +6376,36 @@ describe('ios --device: the lease on the phone', () => {
     expect(listLeaseFiles()).toEqual([]);
   });
 
-  test('--wait without --device, an unusable value, and both flags at once are all STIM_BAD_ARG', async () => {
+  test('at a full device cap, --wait waits for a slot and runs, and no --wait refuses at once', async () => {
     reserve();
-    const noDevice = await run({ wait: '30' });
-    expect(noDevice.exitCode).toBe(1);
-    expect(noDevice.errs.join('\n')).toMatch(/--wait and --no-wait only apply to a `--device` run/);
+    const atCap = {
+      code: 'STIM_AT_CAPACITY',
+      message: '4 Stim device(s) are already booted and concurrency.maxDevices is 4.',
+      remedy: 'stop an environment (stim stop)',
+    };
+    let checks = 0;
+    const waited = await run(
+      { wait: '30' },
+      { checkDeviceCapacity: () => (checks++ === 0 ? atCap : null), sleep: async () => {} },
+    );
+    expect(waited.exitCode).toBe(null);
+    expect(checks).toBe(2);
+    expect(waited.errs.join('\n')).toMatch(/waiting for a device slot/);
 
+    const refused = await run({ json: true }, { checkDeviceCapacity: () => atCap, sleep: async () => {} });
+    expect(refused.exitCode).toBe(1);
+    expect(parseFirst(refused.logs)).toMatchObject({ code: 'STIM_AT_CAPACITY' });
+  });
+
+  test('--no-wait without --device, --wait for a remote device, an unusable value, and both flags at once are all STIM_BAD_ARG', async () => {
+    reserve();
     const bypassNoDevice = await run({ wait: false });
-    expect(bypassNoDevice.errs.join('\n')).toMatch(/only apply to a `--device` run/);
+    expect(bypassNoDevice.exitCode).toBe(1);
+    expect(bypassNoDevice.errs.join('\n')).toMatch(/--no-wait only applies to a `--device` run/);
+
+    const remote = await run({ wait: '30', remote: 'eas' });
+    expect(remote.exitCode).toBe(1);
+    expect(remote.errs.join('\n')).toMatch(/not for a remote device/);
 
     const bad = await run({ device: true, wait: 'soon' }, connected());
     expect(bad.exitCode).toBe(1);

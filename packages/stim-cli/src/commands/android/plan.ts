@@ -72,7 +72,12 @@ export interface AndroidPlanInputs {
 }
 
 type AndroidTargetPlan =
-  | { readonly kind: 'emulator'; readonly systemImage: string | null; readonly deviceProfile: string | null }
+  | {
+      readonly kind: 'emulator';
+      readonly systemImage: string | null;
+      readonly deviceProfile: string | null;
+      readonly deviceSlotWaitSeconds: number;
+    }
   | {
       readonly kind: 'remote';
       readonly backend: RemoteDeviceBackend;
@@ -276,11 +281,11 @@ export function resolveAndroidRunPlan(
       'Pass `--wait <seconds>` to wait for the lease, or `--no-wait` to install without one.',
     );
   }
-  if (waitFlagged && !physical) {
+  if (noWait && !physical) {
     return fail(
       'STIM_BAD_ARG',
-      '--wait and --no-wait only apply to a `--device` run.',
-      'This workspace owns its emulator, so nothing contends for it. Drop the flag, or pass `--device`.',
+      '--no-wait only applies to a `--device` run.',
+      'An emulator run at concurrency.maxDevices already refuses at once. Drop the flag, or pass `--device`.',
     );
   }
   const waitParsed = parseDeviceWait(noWait ? undefined : waitFlag);
@@ -288,12 +293,19 @@ export function resolveAndroidRunPlan(
     return fail(
       'STIM_BAD_ARG',
       waitParsed.error,
-      'Pass a whole number of seconds, e.g. --wait 90. `--wait 0` refuses a leased device at once.',
+      'Pass a whole number of seconds, e.g. --wait 90. `--wait 0` refuses at once.',
     );
   }
   const waitSeconds = waitParsed.seconds;
 
   const remoteBackend = physical ? null : (commandRemoteBackend ?? remoteAndroidSetting(settings));
+  if (waitFlagged && remoteBackend) {
+    return fail(
+      'STIM_BAD_ARG',
+      '--wait waits for a `--device` lease or a device slot on this machine, not for a remote device.',
+      'Drop --wait, or run on this machine without --remote or the android.remote setting.',
+    );
+  }
   const settingsLayersForOrigin = settingsLayers(settingsContext);
   const imageRefusal = systemImageRefusal({
     slot,
@@ -343,7 +355,7 @@ export function resolveAndroidRunPlan(
     ? { kind: 'physical', serial: typeof deviceFlag === 'string' ? deviceFlag : null, lease: { waitSeconds, noWait } }
     : remoteBackend
       ? { kind: 'remote', backend: remoteBackend, systemImage, deviceProfile }
-      : { kind: 'emulator', systemImage, deviceProfile };
+      : { kind: 'emulator', systemImage, deviceProfile, deviceSlotWaitSeconds: waitFlagged ? waitSeconds : 0 };
   return {
     ok: true,
     plan: {

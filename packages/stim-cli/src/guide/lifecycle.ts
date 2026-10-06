@@ -1404,8 +1404,12 @@ OPT-IN CONCURRENCY LIMITS (UNLIMITED BY DEFAULT)
                             check and the boot's place in the count are taken
                             under one lock in $STIM_HOME, so concurrent runs
                             cannot pass the cap together. At the cap, a NEW
-                            device is REFUSED with STIM_AT_CAPACITY
-                            (interactive-shaped: it does not queue). A
+                            device is REFUSED at once with STIM_AT_CAPACITY,
+                            unless the run passed \`--wait <seconds>\`: then
+                            both checks poll until a slot frees or that time
+                            runs out, printing a waiting line. It is not a
+                            queue, so a run that arrives later can take a freed
+                            slot first. A
                             workspace whose own device is already booted or
                             booting is never refused. A listing that fails for
                             any reason but a tool that is missing or not set up

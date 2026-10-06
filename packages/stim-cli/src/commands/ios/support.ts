@@ -268,9 +268,8 @@ export function printDiagnostics(note: (line: string) => void, result: Extract<B
 export function resolveIosWait(
   opts: IosCommandOptions,
   physical: boolean,
-): { waitSeconds: number; noWait: boolean } | { failure: FailArgs } {
+): { waitSeconds: number; noWait: boolean; deviceSlotWaitSeconds: number } | { failure: FailArgs } {
   const noWait = opts.wait === false;
-  const waitFlagged = opts.wait !== undefined;
   if (opts.waitConflict) {
     return {
       failure: {
@@ -280,12 +279,12 @@ export function resolveIosWait(
       },
     };
   }
-  if (waitFlagged && !physical) {
+  if (noWait && !physical) {
     return {
       failure: {
         code: 'STIM_BAD_ARG',
-        message: '--wait and --no-wait only apply to a `--device` run.',
-        remedy: 'This workspace owns its simulator, so nothing contends for it. Drop the flag, or pass `--device`.',
+        message: '--no-wait only applies to a `--device` run.',
+        remedy: 'A simulator run at concurrency.maxDevices already refuses at once. Drop the flag, or pass `--device`.',
       },
     };
   }
@@ -295,9 +294,10 @@ export function resolveIosWait(
       failure: {
         code: 'STIM_BAD_ARG',
         message: waitParsed.error,
-        remedy: 'Pass a whole number of seconds, e.g. --wait 90. `--wait 0` refuses a leased device at once.',
+        remedy: 'Pass a whole number of seconds, e.g. --wait 90. `--wait 0` refuses at once.',
       },
     };
   }
-  return { waitSeconds: waitParsed.seconds, noWait };
+  const deviceSlotWaitSeconds = !physical && opts.wait !== undefined ? waitParsed.seconds : 0;
+  return { waitSeconds: waitParsed.seconds, noWait, deviceSlotWaitSeconds };
 }

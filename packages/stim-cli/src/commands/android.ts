@@ -87,7 +87,7 @@ import {
   type androidDataFreeBytes,
 } from '../devices/android.ts';
 import type { teardownOwnedAvd } from '../devices/teardown.ts';
-import { DeviceAdmissionRefusal, checkDeviceCapacity } from '../engine/device-capacity.ts';
+import { DeviceAdmissionRefusal, checkDeviceCapacity, waitForDeviceCapacity } from '../engine/device-capacity.ts';
 import { budgetGate, type ReclaimedStep } from '../budget.ts';
 import { didSetUpDevice, ensureBooted, ensureOwnedDevice, type OwnedDeviceRecord } from '../engine/device.ts';
 import { AvdRecoveryError, AvdBootError } from '../engine/device-android.ts';
@@ -131,7 +131,7 @@ import type { FailExtra, AndroidRecord, RunAndroidResult, AndroidBootLike } from
 import { acquireAndroidArtifact } from './android/artifact.ts';
 import { persistLastBuild } from './android/result.ts';
 import { finishAndroidRun } from './android/launch.ts';
-import { resolveAndroidRunPlan } from './android/plan.ts';
+import { resolveAndroidRunPlan, type AndroidRunPlan } from './android/plan.ts';
 import { planAndroid } from './android/next-build.ts';
 
 export { androidFacts, lastBuildRecord } from './android/result.ts';
@@ -244,7 +244,7 @@ export function registerAndroid(program: Command): void {
     )
     .option(
       '--wait <seconds>',
-      'How long to wait for another workspace to release the device it leases, before refusing with STIM_DEVICE_BUSY (default 60, 0 refuses at once). Only with --device.',
+      'With --device, how long to wait for another workspace to release the device it leases before refusing with STIM_DEVICE_BUSY (default 60, 0 refuses at once). Otherwise, how long to wait for a device slot under concurrency.maxDevices before refusing with STIM_AT_CAPACITY (default 0).',
     )
     .option(
       '--no-wait',
@@ -386,6 +386,7 @@ interface RunAndroidOptions {
   recordStats?: typeof recordRunStats;
   readEstimates?: typeof readRunEstimates;
   now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
   out?: (line: string) => void;
   emit?: (line: string) => void;
 }
@@ -586,6 +587,10 @@ function androidSlotOptions(options: RunAndroidOptions) {
     writeLaunch: ((projectRoot, platform, record) =>
       base.writeLaunch(projectRoot, platform, record, slot)) as typeof base.writeLaunch,
   };
+}
+
+function deviceSlotWaitMs(target: AndroidRunPlan['target']): number {
+  return target.kind === 'emulator' ? target.deviceSlotWaitSeconds * 1000 : 0;
 }
 
 function avdSetupFailure(
@@ -855,6 +860,7 @@ export async function runAndroid(options: RunAndroidOptions = {} as RunAndroidOp
   if (!planned.ok) return fail(planned.code, planned.message, planned.remedy, { lines: planned.lines });
   const { plan } = planned;
   const { build: buildPlan, target, isExpo, cacheProviderConfig } = plan;
+  const deviceSlotDeadline = now() + deviceSlotWaitMs(target);
   const { variant, release, cache: cachePolicy } = buildPlan;
   record.configuration = variant ?? 'debug';
   const useBuildCache = cachePolicy.read;
@@ -1018,11 +1024,10 @@ export async function runAndroid(options: RunAndroidOptions = {} as RunAndroidOp
         );
       }
     }
-    const capacity = checkCapacity({
-      platform: PLATFORM,
-      project,
-      max: limits.maxDevices,
-    });
+    const capacity = await waitForDeviceCapacity(
+      () => checkCapacity({ platform: PLATFORM, project, max: limits.maxDevices }),
+      { deadline: deviceSlotDeadline, now, sleep: options.sleep, out: (line) => out(chalk.dim(line)) },
+    );
     if (capacity) return fail(capacity.code, capacity.message, capacity.remedy);
 
     const prepare = stepClock(now);
@@ -1037,6 +1042,7 @@ export async function runAndroid(options: RunAndroidOptions = {} as RunAndroidOp
           systemImage: target.systemImage,
           systemImageFlag: systemImageFlag?.trim() || null,
           deviceProfile: target.deviceProfile,
+          deviceSlotDeadline,
         },
         note: out,
         out,
@@ -1057,7 +1063,7 @@ export async function runAndroid(options: RunAndroidOptions = {} as RunAndroidOp
 
     const boot = (): Promise<AndroidBootLike> =>
       Promise.resolve(
-        ensureDeviceBooted({ platform: PLATFORM, device, projectPath: root, out, logFile: emuLog }),
+        ensureDeviceBooted({ platform: PLATFORM, device, projectPath: root, out, logFile: emuLog, deviceSlotDeadline }),
       ).catch((e) => ({
         failed: true as const,
         reason: String((e as Error)?.message || e),
@@ -1315,6 +1321,7 @@ export async function runAndroid(options: RunAndroidOptions = {} as RunAndroidOp
               projectPath: root,
               out,
               logFile: emuLog,
+              deviceSlotDeadline,
             }),
           ).catch((e) => ({ failed: true as const, reason: String((e as Error)?.message || e) })),
       });
